@@ -1,0 +1,32 @@
+[project]
+name = "ragapp"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Saish", email = "saishnim03@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "llama-index>=0.10.0",
+    "llama-index-vector-stores-qdrant>=0.2.0",
+    "llama-index-embeddings-openai>=0.1.0",
+    "llama-index-llms-openai>=0.1.0",
+    "qdrant-client>=1.7.0",
+    "python-dotenv>=1.0.0",
+    "python-multipart>=0.0.6",
+    "pypdf>=4.0.0",
+    "inngest>=0.3.0",
+    "streamlit>=1.31.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+]
+
+[project.scripts]
+ragapp = "ragapp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
