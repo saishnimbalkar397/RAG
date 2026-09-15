@@ -4,13 +4,14 @@ RAG (Retrieval-Augmented Generation) pipeline.
 This module orchestrates:
 - Document indexing with embeddings
 - Semantic search/retrieval
-- Context-aware answer generation
+- Context-aware answer generation with Gemini or OpenAI
 """
 import logging
 import uuid
 from pathlib import Path
 from typing import Any
 
+import google.generativeai as genai
 from llama_index.core import Document, Settings, VectorStoreIndex
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -47,22 +48,42 @@ class RAGPipeline:
         # Initialize LlamaIndex global settings
         logger.info("Initializing RAG pipeline...")
         
-        # Configure embedding model
+        # Configure embedding model (always use OpenAI for embeddings)
+        if not settings.openai_api_key:
+            raise ValueError("OpenAI API key is required for embeddings")
+        
         self.embed_model = OpenAIEmbedding(
             model=settings.embedding_model,
             api_key=settings.openai_api_key,
         )
         
-        # Configure LLM
-        self.llm = OpenAI(
-            model=settings.llm_model,
-            api_key=settings.openai_api_key,
-            temperature=0.1,  # Low temperature for factual answers
-        )
+        # Configure LLM based on provider
+        if settings.api_provider == "gemini":
+            if not settings.gemini_api_key:
+                raise ValueError("Gemini API key is required when using Gemini provider")
+            
+            # Configure Gemini
+            genai.configure(api_key=settings.gemini_api_key)
+            self.gemini_model = genai.GenerativeModel(settings.llm_model)
+            self.llm = None  # We'll use Gemini directly
+            logger.info(f"Using Gemini LLM: {settings.llm_model}")
+        else:
+            # Use OpenAI
+            if not settings.openai_api_key:
+                raise ValueError("OpenAI API key is required when using OpenAI provider")
+            
+            self.llm = OpenAI(
+                model=settings.llm_model,
+                api_key=settings.openai_api_key,
+                temperature=0.1,
+            )
+            self.gemini_model = None
+            logger.info(f"Using OpenAI LLM: {settings.llm_model}")
         
         # Set LlamaIndex global configuration
         Settings.embed_model = self.embed_model
-        Settings.llm = self.llm
+        if self.llm:
+            Settings.llm = self.llm
         Settings.chunk_size = settings.chunk_size
         Settings.chunk_overlap = settings.chunk_overlap
         
@@ -201,7 +222,7 @@ class RAGPipeline:
         Pipeline:
         1. Generate question embedding
         2. Search Qdrant for similar chunks
-        3. Send chunks + question to LLM
+        3. Send chunks + question to LLM (Gemini or OpenAI)
         4. Return answer with sources
         
         Args:
@@ -230,40 +251,123 @@ class RAGPipeline:
                     "total_docs": 0,
                 }
             
-            # Create query engine
-            query_engine = self.index.as_query_engine(
-                similarity_top_k=top_k,
-                response_mode="compact",  # Concatenate chunks efficiently
-            )
-            
-            # Query
-            logger.info("Querying vector store and generating answer...")
-            response = query_engine.query(question)
-            
-            # Extract sources
-            sources = []
-            if hasattr(response, 'source_nodes'):
-                for node in response.source_nodes:
-                    source = {
-                        "text": node.node.text[:200] + "..." if len(node.node.text) > 200 else node.node.text,
-                        "score": float(node.score) if hasattr(node, 'score') else 0.0,
-                        "metadata": node.node.metadata,
-                    }
-                    sources.append(source)
-            
-            logger.info(f"✓ Retrieved {len(sources)} source chunks")
-            
-            return {
-                "answer": str(response),
-                "sources": sources,
-                "chunks_retrieved": len(sources),
-                "total_docs": doc_count,
-                "question": question,
-            }
+            # Use Gemini or OpenAI based on provider
+            if self.settings.api_provider == "gemini":
+                return self._query_with_gemini(question, top_k)
+            else:
+                return self._query_with_llamaindex(question, top_k)
             
         except Exception as e:
             logger.error(f"Query failed: {e}")
             raise
+    
+    def _query_with_llamaindex(self, question: str, top_k: int) -> dict[str, Any]:
+        """Query using LlamaIndex with OpenAI"""
+        # Create query engine
+        query_engine = self.index.as_query_engine(
+            similarity_top_k=top_k,
+            response_mode="compact",
+        )
+        
+        # Query
+        logger.info("Querying with LlamaIndex/OpenAI...")
+        response = query_engine.query(question)
+        
+        # Extract sources
+        sources = []
+        if hasattr(response, 'source_nodes'):
+            for node in response.source_nodes:
+                source = {
+                    "text": node.node.text[:200] + "..." if len(node.node.text) > 200 else node.node.text,
+                    "score": float(node.score) if hasattr(node, 'score') else 0.0,
+                    "metadata": node.node.metadata,
+                }
+                sources.append(source)
+        
+        return {
+            "answer": str(response),
+            "sources": sources,
+            "chunks_retrieved": len(sources),
+            "total_docs": self.qdrant_db.count_documents(),
+            "question": question,
+        }
+    
+    def _query_with_gemini(self, question: str, top_k: int) -> dict[str, Any]:
+        """Query using Gemini API directly"""
+        logger.info("Querying with Gemini...")
+        
+        # Step 1: Get question embedding
+        question_embedding = self.embed_model.get_text_embedding(question)
+        
+        # Step 2: Search Qdrant
+        search_results = self.qdrant_client.search(
+            collection_name=self.settings.qdrant_collection_name,
+            query_vector=question_embedding,
+            limit=top_k,
+        )
+        
+        if not search_results:
+            return {
+                "answer": "I couldn't find any relevant information in the documents to answer your question.",
+                "sources": [],
+                "chunks_retrieved": 0,
+                "total_docs": self.qdrant_db.count_documents(),
+                "question": question,
+            }
+        
+        # Step 3: Build context from retrieved chunks
+        context_parts = []
+        sources = []
+        
+        for i, result in enumerate(search_results, 1):
+            chunk_text = result.payload.get("text", result.payload.get("_node_content", ""))
+            metadata = result.payload
+            
+            context_parts.append(f"[Document {i}]\n{chunk_text}\n")
+            
+            sources.append({
+                "text": chunk_text[:200] + "..." if len(chunk_text) > 200 else chunk_text,
+                "score": float(result.score),
+                "metadata": {
+                    "filename": metadata.get("filename", "Unknown"),
+                    "document_id": metadata.get("document_id", "Unknown"),
+                    "chunk_id": metadata.get("chunk_id", "Unknown"),
+                },
+            })
+        
+        context = "\n".join(context_parts)
+        
+        # Step 4: Create prompt for Gemini
+        prompt = f"""You are a helpful AI assistant that answers questions based on provided documents.
+
+Context from documents:
+{context}
+
+User Question: {question}
+
+Instructions:
+- Answer the question using ONLY the information from the context above
+- If the answer cannot be found in the context, say "I don't have enough information to answer that question"
+- Be specific and cite which document you're referencing when relevant
+- Keep your answer clear and concise
+
+Answer:"""
+        
+        # Step 5: Generate answer with Gemini
+        logger.info("Generating answer with Gemini...")
+        response = self.gemini_model.generate_content(prompt)
+        
+        answer = response.text if hasattr(response, 'text') else str(response)
+        
+        logger.info(f"✓ Retrieved {len(sources)} source chunks")
+        
+        return {
+            "answer": answer,
+            "sources": sources,
+            "chunks_retrieved": len(sources),
+            "total_docs": self.qdrant_db.count_documents(),
+            "question": question,
+        }
     
     def delete_document(self, document_id: str) -> bool:
         """

@@ -20,9 +20,21 @@ class Settings(BaseSettings):
     """
     
     # OpenAI Configuration
-    openai_api_key: str = Field(
-        ...,
+    openai_api_key: str | None = Field(
+        default=None,
         description="OpenAI API key for embeddings and LLM"
+    )
+    
+    # Gemini Configuration
+    gemini_api_key: str | None = Field(
+        default=None,
+        description="Google Gemini API key for LLM"
+    )
+    
+    # API Provider Selection
+    api_provider: Literal["openai", "gemini"] = Field(
+        default="gemini",
+        description="API provider to use (openai or gemini)"
     )
     
     # Qdrant Configuration
@@ -89,8 +101,8 @@ class Settings(BaseSettings):
         description="OpenAI embedding model"
     )
     llm_model: str = Field(
-        default="gpt-4o-mini",
-        description="OpenAI LLM model for generation"
+        default="gemini-1.5-flash",
+        description="LLM model for generation (gemini-1.5-flash, gemini-1.5-pro, or gpt-4o-mini)"
     )
     
     # File Upload Configuration
@@ -108,17 +120,21 @@ class Settings(BaseSettings):
         extra="ignore"
     )
     
-    @field_validator("openai_api_key")
+    @field_validator("openai_api_key", "gemini_api_key")
     @classmethod
-    def validate_openai_key(cls, v: str) -> str:
-        """Validate OpenAI API key format"""
-        if not v or v == "your_openai_api_key_here":
-            raise ValueError(
-                "OpenAI API key is required. "
-                "Get one at https://platform.openai.com/api-keys"
-            )
-        if not v.startswith("sk-"):
-            raise ValueError("OpenAI API key should start with 'sk-'")
+    def validate_api_keys(cls, v: str | None, info) -> str | None:
+        """Validate API keys based on provider"""
+        field_name = info.field_name
+        
+        # Skip validation if not set
+        if not v or v == "your_openai_api_key_here" or v == "your_gemini_api_key_here":
+            return None
+        
+        # Validate OpenAI key format
+        if field_name == "openai_api_key" and v:
+            if not v.startswith("sk-"):
+                raise ValueError("OpenAI API key should start with 'sk-'")
+        
         return v
     
     @field_validator("chunk_overlap")
