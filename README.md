@@ -356,11 +356,6 @@ docker-compose up
 - [FastAPI Docs](https://fastapi.tiangolo.com/)
 - [Streamlit Docs](https://docs.streamlit.io/)
 
----
-
-## 📄 License
-
-MIT License - see LICENSE file for details
 
 ---
 
@@ -382,11 +377,7 @@ Contributions welcome! Please:
 
 ---
 
-## ⭐ Star History
 
-If you find this project useful, please give it a star! ⭐
-
----
 
 ## 🙏 Acknowledgments
 
@@ -396,8 +387,8 @@ Built with:
 - [Streamlit](https://streamlit.io/) - UI framework
 - [Qdrant](https://qdrant.tech/) - Vector database
 - [OpenAI](https://openai.com/) - Embeddings
-- [Google Gemini](https://deepmind.google/technologies/gemini/) - LLM
+
 
 ---
 
-<p align="center">Made with ❤️ for the AI community</p>
+
